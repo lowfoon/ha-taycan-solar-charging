@@ -22,7 +22,7 @@ Solar-first EV charging automation for the Porsche Taycan. Charges only when exc
 
 | Integration | Required entities |
 |---|---|
-| [Porsche Connect](https://www.home-assistant.io/integrations/porsche/) | `switch.taycan_direct_charging`, `binary_sensor.taycan_charging_active`, `sensor.taycan_state_of_charge`, `sensor.taycan_remaining_range_electric`, `device_tracker.taycan` |
+| [ha-porscheconnect](https://github.com/CJNE/ha-porscheconnect) (HACS) | `switch.taycan_direct_charging`, `binary_sensor.taycan_charging_active`, `sensor.taycan_state_of_charge`, `sensor.taycan_remaining_range_electric`, `device_tracker.taycan` |
 | Your solar inverter | A binary sensor that is `on` when exporting to grid, and a real-time grid power sensor (W) |
 | Google Calendar | Two calendar entities (personal + work) — or remove the second if not needed |
 | Mobile App | A `notify.*` entity for push notifications |
