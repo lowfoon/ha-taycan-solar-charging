@@ -1,0 +1,21 @@
+# ── Configuration Snippets ────────────────────────────────────────────────────
+#
+# Add these to your configuration.yaml (or a suitable package file).
+# These are required by the automations.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 90-second rolling average of grid power.
+# Positive = importing from grid, Negative = exporting to grid.
+# Replace sensor.YOUR_GRID_ACTIVE_POWER with your inverter's real-time grid power sensor.
+#
+# This averaged sensor is used by the grid import safeguard automation to avoid
+# reacting to transient power spikes when solar clouds over briefly.
+
+sensor:
+  - platform: statistics
+    name: grid_power_avg_90s
+    entity_id: sensor.YOUR_GRID_ACTIVE_POWER   # replace with your inverter's grid power sensor
+    state_characteristic: mean
+    max_age:
+      seconds: 90

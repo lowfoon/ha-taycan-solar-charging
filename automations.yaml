@@ -1,0 +1,530 @@
+# ── Taycan Smart Charging ────────────────────────────────────────────────────
+#
+# Charges the Porsche Taycan only when:
+#   1. Excess solar has been exported to the grid for 5+ consecutive minutes
+#   2. During the off-peak tariff window (00:00–05:00)
+#
+# Safeguards prevent any unintentional grid import during solar hours.
+# All automations are gated on the car being home — public charging is unaffected.
+#
+# ── ENTITIES TO CONFIGURE ────────────────────────────────────────────────────
+#
+# Porsche Connect integration (these entity IDs are standard):
+#   switch.taycan_direct_charging
+#   binary_sensor.taycan_charging_active
+#   sensor.taycan_state_of_charge
+#   sensor.taycan_remaining_range_electric
+#   device_tracker.taycan
+#
+# Replace these with your own:
+#   YOUR_EXPORT_SENSOR      — binary sensor that is 'on' when you are exporting
+#                             solar to the grid (e.g. binary_sensor.sigen_plant_exporting_to_grid)
+#   YOUR_GRID_POWER_SENSOR  — sensor reporting net grid power in W, positive = import,
+#                             negative = export. Use a 90s statistics average to avoid
+#                             reacting to transient spikes. See configuration_snippets.yaml.
+#   YOUR_PHONE              — notify entity for your phone (e.g. notify.mobile_app_pixel_8)
+#   YOUR_PERSONAL_CALENDAR  — Google Calendar entity for your personal calendar
+#   YOUR_WORK_CALENDAR      — Google Calendar entity for your work calendar
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+- id: taycan_charge_start_solar
+  alias: Taycan - Start charging (solar export)
+  description: >
+    Start charging when excess solar has been consistently exported for 5
+    minutes, avoiding false starts from brief solar fluctuations.
+  triggers:
+    - trigger: state
+      entity_id: YOUR_EXPORT_SENSOR
+      to: 'on'
+      for: '00:05:00'
+  conditions:
+    - condition: state
+      entity_id: device_tracker.taycan
+      state: 'home'
+    - condition: template
+      value_template: >
+        {{ states('sensor.taycan_state_of_charge') | int(0) <
+           (100 if is_state('input_boolean.taycan_full_charge_override', 'on') else 85) }}
+    - condition: state
+      entity_id: binary_sensor.taycan_charging_active
+      state: 'off'
+  actions:
+    - action: switch.turn_on
+      target:
+        entity_id: switch.taycan_direct_charging
+    - action: logbook.log
+      data:
+        name: Taycan Charging
+        message: >-
+          Charging started — solar export detected
+          (SoC {{ states('sensor.taycan_state_of_charge') }}%,
+          grid {{ states('YOUR_GRID_POWER_SENSOR') | float(0) | round(0) }}W)
+        entity_id: switch.taycan_direct_charging
+  mode: single
+
+- id: taycan_charge_start_offpeak
+  alias: Taycan - Start charging (off-peak window)
+  description: >
+    Start charging at midnight, or when the car is plugged in during the
+    off-peak window (00:00–05:00) if it wasn't already charging.
+  triggers:
+    - trigger: time
+      at: '00:00:00'
+      id: midnight
+    - trigger: state
+      entity_id: binary_sensor.taycan_charging_active
+      to: 'off'
+      for: '00:00:30'
+      id: plugged_in
+  conditions:
+    - condition: state
+      entity_id: device_tracker.taycan
+      state: 'home'
+    - condition: template
+      value_template: >
+        {{ states('sensor.taycan_state_of_charge') | int(0) <
+           (100 if is_state('input_boolean.taycan_full_charge_override', 'on') else 85) }}
+    - condition: state
+      entity_id: binary_sensor.taycan_charging_active
+      state: 'off'
+    - condition: or
+      conditions:
+        - condition: trigger
+          id: midnight
+        - condition: time
+          after: '00:00:00'
+          before: '05:00:00'
+  actions:
+    - action: switch.turn_on
+      target:
+        entity_id: switch.taycan_direct_charging
+    - action: logbook.log
+      data:
+        name: Taycan Charging
+        message: >-
+          Charging started — off-peak window (00:00)
+          (SoC {{ states('sensor.taycan_state_of_charge') }}%,
+          grid {{ states('YOUR_GRID_POWER_SENSOR') | float(0) | round(0) }}W)
+        entity_id: switch.taycan_direct_charging
+  mode: single
+
+- id: taycan_charge_stop_no_solar
+  alias: Taycan - Stop charging (solar export stopped)
+  description: Stop charging when we stop exporting, outside the off-peak window.
+  triggers:
+    - trigger: state
+      entity_id: YOUR_EXPORT_SENSOR
+      to: 'off'
+  conditions:
+    - condition: state
+      entity_id: device_tracker.taycan
+      state: 'home'
+    - condition: time
+      after: '05:00:00'
+      before: '23:59:59'
+    - condition: state
+      entity_id: binary_sensor.taycan_charging_active
+      state: 'on'
+  actions:
+    - action: switch.turn_off
+      target:
+        entity_id: switch.taycan_direct_charging
+    - action: logbook.log
+      data:
+        name: Taycan Charging
+        message: >-
+          Charging stopped — solar export ended
+          (SoC {{ states('sensor.taycan_state_of_charge') }}%,
+          grid {{ states('YOUR_GRID_POWER_SENSOR') | float(0) | round(0) }}W)
+        entity_id: switch.taycan_direct_charging
+  mode: single
+
+- id: taycan_charge_stop_end_offpeak
+  alias: Taycan - Stop charging (end of off-peak 05:00)
+  description: Stop charging at 05:00 unless solar is still exporting.
+  triggers:
+    - trigger: time
+      at: '05:00:00'
+  conditions:
+    - condition: state
+      entity_id: device_tracker.taycan
+      state: 'home'
+    - condition: state
+      entity_id: YOUR_EXPORT_SENSOR
+      state: 'off'
+    - condition: state
+      entity_id: binary_sensor.taycan_charging_active
+      state: 'on'
+  actions:
+    - action: switch.turn_off
+      target:
+        entity_id: switch.taycan_direct_charging
+    - action: logbook.log
+      data:
+        name: Taycan Charging
+        message: >-
+          Charging stopped — off-peak window ended (05:00)
+          (SoC {{ states('sensor.taycan_state_of_charge') }}%,
+          grid {{ states('YOUR_GRID_POWER_SENSOR') | float(0) | round(0) }}W)
+        entity_id: switch.taycan_direct_charging
+  mode: single
+
+- id: taycan_charge_stop_target_reached
+  alias: Taycan - Stop charging (target SoC reached)
+  description: >
+    Stop at 85% normally. Stop at 100% when override is on, then reset the override.
+    Two numeric_state triggers ensure the 100% trigger fires even after the 85% one
+    (a single above: 84 trigger won't re-fire once the state is already above 84).
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.taycan_state_of_charge
+      above: 84
+    - trigger: numeric_state
+      entity_id: sensor.taycan_state_of_charge
+      above: 99
+  conditions:
+    - condition: state
+      entity_id: device_tracker.taycan
+      state: 'home'
+    - condition: template
+      value_template: >
+        {{ states('sensor.taycan_state_of_charge') | int(0) >=
+           (100 if is_state('input_boolean.taycan_full_charge_override', 'on') else 85) }}
+    - condition: state
+      entity_id: binary_sensor.taycan_charging_active
+      state: 'on'
+  actions:
+    - action: switch.turn_off
+      target:
+        entity_id: switch.taycan_direct_charging
+    - if:
+        - condition: state
+          entity_id: input_boolean.taycan_full_charge_override
+          state: 'on'
+      then:
+        - action: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.taycan_full_charge_override
+        - action: logbook.log
+          data:
+            name: Taycan Charging
+            message: Charging complete — reached 100%, override reset
+            entity_id: switch.taycan_direct_charging
+        - action: notify.YOUR_PHONE
+          data:
+            title: "✅ Taycan fully charged"
+            message: "Reached 100% — override reset. Ready to go."
+      else:
+        - action: logbook.log
+          data:
+            name: Taycan Charging
+            message: Charging stopped — reached 85% target
+            entity_id: switch.taycan_direct_charging
+  mode: single
+
+- id: taycan_charge_stop_unexpected_start
+  alias: Taycan - Stop charging (unexpected start outside valid window)
+  description: >
+    Safeguard: if charging becomes active outside a valid window (no solar
+    export, not in off-peak 00:00–05:00), immediately attempt to stop it.
+    Catches cases like the Porsche app's 25% minimum charge floor overriding HA.
+    Retries once after 60s and escalates if still charging.
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.taycan_charging_active
+      to: 'on'
+  conditions:
+    - condition: state
+      entity_id: device_tracker.taycan
+      state: 'home'
+    - condition: template
+      value_template: "{{ now().hour >= 5 }}"
+    - condition: state
+      entity_id: YOUR_EXPORT_SENSOR
+      state: 'off'
+  actions:
+    - action: switch.turn_off
+      target:
+        entity_id: switch.taycan_direct_charging
+    - action: logbook.log
+      data:
+        name: Taycan Charging
+        message: >-
+          Charging started outside valid window — stop command sent
+          (SoC {{ states('sensor.taycan_state_of_charge') }}%)
+        entity_id: switch.taycan_direct_charging
+    - action: notify.YOUR_PHONE
+      data:
+        title: "⚠️ Taycan — Unexpected charging stopped"
+        message: >-
+          Charging started outside a valid window and was stopped.
+          SoC: {{ states('sensor.taycan_state_of_charge') }}%
+    - delay: '00:01:00'
+    - if:
+        - condition: state
+          entity_id: binary_sensor.taycan_charging_active
+          state: 'on'
+      then:
+        - action: switch.turn_off
+          target:
+            entity_id: switch.taycan_direct_charging
+        - action: logbook.log
+          data:
+            name: Taycan Charging
+            message: Retry stop command sent — car still charging 60s after first attempt
+            entity_id: switch.taycan_direct_charging
+        - action: notify.YOUR_PHONE
+          data:
+            title: "⚠️ Taycan — Stop command retried"
+            message: >-
+              First stop attempt ignored. Retry sent.
+              SoC: {{ states('sensor.taycan_state_of_charge') }}%
+        - delay: '00:01:00'
+        - if:
+            - condition: state
+              entity_id: binary_sensor.taycan_charging_active
+              state: 'on'
+          then:
+            - action: logbook.log
+              data:
+                name: Taycan Charging
+                message: Car still charging after retry — manual intervention may be needed
+                entity_id: switch.taycan_direct_charging
+            - action: notify.YOUR_PHONE
+              data:
+                title: "🚨 Taycan — Cannot stop charging"
+                message: >-
+                  Two stop commands sent but car is still charging.
+                  Manual intervention may be needed.
+                  SoC: {{ states('sensor.taycan_state_of_charge') }}%
+  mode: single
+
+- id: taycan_charge_stop_grid_import
+  alias: Taycan - Stop charging (grid import detected)
+  description: >
+    Safeguard: if the car is charging during solar hours but grid power goes
+    positive (we are importing), stop charging immediately. Not active during
+    the off-peak window (00:00–05:00) where grid import is intentional.
+    Uses a 90s averaged grid power sensor to avoid reacting to transient spikes.
+    Retries once after 60s and escalates if still charging.
+  triggers:
+    - trigger: numeric_state
+      entity_id: YOUR_GRID_POWER_SENSOR
+      above: 100
+  conditions:
+    - condition: state
+      entity_id: device_tracker.taycan
+      state: 'home'
+    - condition: template
+      value_template: "{{ now().hour >= 5 }}"
+    - condition: state
+      entity_id: binary_sensor.taycan_charging_active
+      state: 'on'
+  actions:
+    - action: switch.turn_off
+      target:
+        entity_id: switch.taycan_direct_charging
+    - action: logbook.log
+      data:
+        name: Taycan Charging
+        message: >-
+          Charging stopped — grid import detected ({{ states('YOUR_GRID_POWER_SENSOR') | round(0) }}W),
+          safeguard triggered
+        entity_id: switch.taycan_direct_charging
+    - action: notify.YOUR_PHONE
+      data:
+        title: "⚠️ Taycan — Grid import safeguard triggered"
+        message: >-
+          Charging stopped — pulling {{ states('YOUR_GRID_POWER_SENSOR') | float(0) | round(0) }}W from grid.
+          SoC: {{ states('sensor.taycan_state_of_charge') }}%
+    - delay: '00:01:00'
+    - if:
+        - condition: state
+          entity_id: binary_sensor.taycan_charging_active
+          state: 'on'
+      then:
+        - action: switch.turn_off
+          target:
+            entity_id: switch.taycan_direct_charging
+        - action: logbook.log
+          data:
+            name: Taycan Charging
+            message: Retry stop command sent — car still charging 60s after first attempt
+            entity_id: switch.taycan_direct_charging
+        - action: notify.YOUR_PHONE
+          data:
+            title: "⚠️ Taycan — Stop command retried"
+            message: >-
+              First stop attempt ignored. Retry sent.
+              SoC: {{ states('sensor.taycan_state_of_charge') }}%
+        - delay: '00:01:00'
+        - if:
+            - condition: state
+              entity_id: binary_sensor.taycan_charging_active
+              state: 'on'
+          then:
+            - action: logbook.log
+              data:
+                name: Taycan Charging
+                message: Car still charging after retry — manual intervention may be needed
+                entity_id: switch.taycan_direct_charging
+            - action: notify.YOUR_PHONE
+              data:
+                title: "🚨 Taycan — Cannot stop charging"
+                message: >-
+                  Two stop commands sent but car is still charging.
+                  Manual intervention may be needed.
+                  SoC: {{ states('sensor.taycan_state_of_charge') }}%
+  mode: single
+
+- id: taycan_charge_override_on
+  alias: Taycan - Full charge override enabled
+  description: >
+    When the override is switched on, resume charging immediately if
+    conditions are currently met (solar exporting or within off-peak window).
+  triggers:
+    - trigger: state
+      entity_id: input_boolean.taycan_full_charge_override
+      to: 'on'
+  conditions:
+    - condition: state
+      entity_id: device_tracker.taycan
+      state: 'home'
+    - condition: template
+      value_template: "{{ states('sensor.taycan_state_of_charge') | int(0) < 100 }}"
+    - condition: or
+      conditions:
+        - condition: state
+          entity_id: YOUR_EXPORT_SENSOR
+          state: 'on'
+        - condition: time
+          after: '00:00:00'
+          before: '05:00:00'
+  actions:
+    - action: switch.turn_on
+      target:
+        entity_id: switch.taycan_direct_charging
+    - action: logbook.log
+      data:
+        name: Taycan Charging
+        message: Override enabled — charging to 100%
+        entity_id: switch.taycan_direct_charging
+  mode: single
+
+- id: taycan_charge_start_arrived_home
+  alias: Taycan - Start charging (car arrived home)
+  description: >
+    When the car arrives home, start charging immediately if solar is
+    exporting or the off-peak window is active.
+  triggers:
+    - trigger: state
+      entity_id: device_tracker.taycan
+      to: 'home'
+      for: '00:01:00'
+  conditions:
+    - condition: template
+      value_template: >
+        {{ states('sensor.taycan_state_of_charge') | int(0) <
+           (100 if is_state('input_boolean.taycan_full_charge_override', 'on') else 85) }}
+    - condition: state
+      entity_id: binary_sensor.taycan_charging_active
+      state: 'off'
+    - condition: or
+      conditions:
+        - condition: state
+          entity_id: YOUR_EXPORT_SENSOR
+          state: 'on'
+        - condition: time
+          after: '00:00:00'
+          before: '05:00:00'
+  actions:
+    - action: switch.turn_on
+      target:
+        entity_id: switch.taycan_direct_charging
+    - action: logbook.log
+      data:
+        name: Taycan Charging
+        message: >-
+          Charging started — car arrived home, conditions met
+          (SoC {{ states('sensor.taycan_state_of_charge') }}%,
+          grid {{ states('YOUR_GRID_POWER_SENSOR') | float(0) | round(0) }}W)
+        entity_id: switch.taycan_direct_charging
+  mode: single
+
+- id: taycan_charge_prep_calendar
+  alias: Taycan - Auto full charge for tagged calendar events
+  description: >
+    At 22:00, checks your calendars for events tagged with 🚗 in the next
+    16 hours. If found, enables full charge override so the car charges to
+    100% overnight or on the next solar window.
+    Add 🚗 anywhere in a Google Calendar event title to trigger this.
+  triggers:
+    - trigger: time
+      at: '22:00:00'
+  conditions:
+    - condition: state
+      entity_id: device_tracker.taycan
+      state: 'home'
+    - condition: template
+      value_template: "{{ states('sensor.taycan_state_of_charge') | int(0) < 100 }}"
+  actions:
+    - action: calendar.get_events
+      target:
+        entity_id:
+          - YOUR_PERSONAL_CALENDAR
+          - YOUR_WORK_CALENDAR
+      data:
+        start_date_time: "{{ now().isoformat() }}"
+        end_date_time: "{{ (now() + timedelta(hours=16)).isoformat() }}"
+      response_variable: cal_events
+    - variables:
+        tagged_events: >-
+          {% set ns = namespace(found=[]) %}
+          {% for cal_id in ['YOUR_PERSONAL_CALENDAR', 'YOUR_WORK_CALENDAR'] %}
+            {% for event in cal_events[cal_id].events %}
+              {% if '🚗' in event.get('summary', '') %}
+                {% set ns.found = ns.found + [event.summary] %}
+              {% endif %}
+            {% endfor %}
+          {% endfor %}
+          {{ ns.found | join(', ') }}
+    - if:
+        - condition: template
+          value_template: "{{ tagged_events | length > 0 }}"
+      then:
+        - action: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.taycan_full_charge_override
+        - action: logbook.log
+          data:
+            name: Taycan Charging
+            message: "Full charge override enabled — calendar event: {{ tagged_events }}"
+            entity_id: input_boolean.taycan_full_charge_override
+        - action: notify.YOUR_PHONE
+          data:
+            title: "🚗 Taycan — Charging to 100% tonight"
+            message: >-
+              Tagged event detected: {{ tagged_events }}.
+              Charging to 100% during off-peak or next solar window.
+  mode: single
+
+- id: taycan_morning_summary
+  alias: Taycan - Morning summary
+  description: Daily 07:00 notification with battery status and charging state.
+  triggers:
+    - trigger: time
+      at: '07:00:00'
+  conditions:
+    - condition: state
+      entity_id: device_tracker.taycan
+      state: 'home'
+  actions:
+    - action: notify.YOUR_PHONE
+      data:
+        title: "🚗 Taycan Morning"
+        message: >-
+          {{ states('sensor.taycan_state_of_charge') }}% battery
+          ({{ states('sensor.taycan_remaining_range_electric') }} mi range).
+          {{ states('sensor.taycan_charging_reason') }}.
+  mode: single

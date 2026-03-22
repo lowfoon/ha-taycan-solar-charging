@@ -1,0 +1,64 @@
+###############################################################################
+# Taycan Smart Charging — Package
+#
+# Contains:
+#   - input_boolean helper for the full charge override
+#   - template sensor that explains current charging state in plain English
+#
+# Include this file via packages in configuration.yaml:
+#   homeassistant:
+#     packages: !include_dir_named packages
+###############################################################################
+
+input_boolean:
+  taycan_full_charge_override:
+    name: Taycan Full Charge Override (100%)
+    icon: mdi:car-electric
+
+template:
+  - sensor:
+      - name: Taycan Charging Reason
+        unique_id: taycan_charging_reason
+        icon: mdi:car-electric
+        # Answers: "why is my car charging or not charging right now?"
+        # Replace YOUR_EXPORT_SENSOR and YOUR_GRID_POWER_SENSOR with your own entity IDs.
+        state: >-
+          {% set soc       = states('sensor.taycan_state_of_charge') | int(-1) %}
+          {% set charging  = is_state('binary_sensor.taycan_charging_active', 'on') %}
+          {% set exporting = is_state('YOUR_EXPORT_SENSOR', 'on') %}
+          {% set override  = is_state('input_boolean.taycan_full_charge_override', 'on') %}
+          {% set offpeak   = now().hour < 5 %}
+          {% set target    = 100 if override else 85 %}
+          {% set grid_w    = states('YOUR_GRID_POWER_SENSOR') | float(0) | round(0) | int %}
+          {% set cmd_on    = is_state('switch.taycan_direct_charging', 'on') %}
+          {% if soc < 0 %}
+            Unknown — SoC unavailable
+          {% elif charging %}
+            {% if offpeak %}
+              Charging · off-peak · {{ soc }}% → {{ target }}%
+            {% elif exporting %}
+              Charging · solar export · {{ soc }}% → {{ target }}%
+            {% else %}
+              Charging · UNEXPECTED · grid {{ grid_w }}W · {{ soc }}%
+            {% endif %}
+          {% else %}
+            {% if soc >= target %}
+              Idle · target {{ target }}% reached ({{ soc }}%)
+            {% elif not offpeak and not exporting %}
+              Waiting · no solar, outside off-peak · {{ soc }}% → {{ target }}%
+            {% elif not cmd_on %}
+              Idle · HA switch off · {{ soc }}% (solar: {{ exporting }}, off-peak: {{ offpeak }})
+            {% else %}
+              Idle · conditions met but not charging · {{ soc }}%
+            {% endif %}
+          {% endif %}
+        attributes:
+          soc_pct: "{{ states('sensor.taycan_state_of_charge') | float(0) | round(1) }}"
+          target_soc_pct: "{{ 100 if is_state('input_boolean.taycan_full_charge_override', 'on') else 85 }}"
+          charging_active: "{{ is_state('binary_sensor.taycan_charging_active', 'on') }}"
+          ha_switch_on: "{{ is_state('switch.taycan_direct_charging', 'on') }}"
+          solar_exporting: "{{ is_state('YOUR_EXPORT_SENSOR', 'on') }}"
+          grid_power_avg_w: "{{ states('YOUR_GRID_POWER_SENSOR') | float(0) | round(0) | int }}"
+          offpeak_window_active: "{{ now().hour < 5 }}"
+          full_charge_override: "{{ is_state('input_boolean.taycan_full_charge_override', 'on') }}"
+          car_at_home: "{{ is_state('device_tracker.taycan', 'home') }}"
